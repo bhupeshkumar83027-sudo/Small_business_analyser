@@ -1,0 +1,8 @@
+streamlit
+pandas
+numpy
+scikit-learn
+PyJWT
+bcrypt
+mysql-connector-python
+plotly

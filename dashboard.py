@@ -1,182 +1,301 @@
 import streamlit as st
 import pandas as pd
-import bcrypt
+import plotly.graph_objects as go
+import plotly.express as px
+from sklearn.linear_model import LinearRegression
 from db import get_connection
-from auth import verify_token, create_token
+from admin_dashboard import admin_dashboard
+import bcrypt
+
+
+# Helper function for "K" formatting
+def format_k(value):
+    return f"₹{value / 1000:.2f}K"
+
+
+def get_data():
+    if "data" not in st.session_state:
+        st.session_state.data = pd.DataFrame(
+            columns=["Date", "Product", "Sales", "Expenses", "Quantity"]
+        )
+    return st.session_state.data
 
 
 def dashboard_page():
+    df = get_data()
 
-    db = get_connection()
-    cursor = db.cursor()
+    # --- CSS: FIXED SIDEBAR & UI ---
+    st.markdown("""
+        <style>
+        [data-testid="stSidebar"] { background-color: #1a1c2c !important; }
+        [data-testid="stSidebar"] * { color: white !important; }
+        .kpi-card {
+            background: white; padding: 20px; border-radius: 15px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1); border-top: 5px solid #6c63ff;
+            text-align: center; margin-bottom: 20px;
+        }
+        .kpi-title { font-size: 14px; color: #888; font-weight: 600; text-transform: uppercase; }
+        .kpi-value { font-size: 24px; color: #333; font-weight: 800; }
+        </style>
+    """, unsafe_allow_html=True)
 
-    username = verify_token(st.session_state.token)
+    with st.sidebar:
+        st.markdown("## 🚀 SmartBiz AI")
+        st.write(f"Welcome, **{st.session_state.get('username', 'User')}**")
+        st.divider()
+        menu = st.radio("Select a Page",
+                        ["Dashboard", "Add Transaction", "Upload File", "AI Prediction", "Profile", "Logout"])
 
-    if not username:
-        st.error("🔒 Session expired")
-        st.session_state.logged_in = False
-        st.rerun()
+    # ================= DASHBOARD LOGIC =================
+    if menu == "Dashboard":
+        st.title("📊 Monthly Business Intelligence")
 
-    # ---------- SESSION INIT ----------
-    if "transactions" not in st.session_state:
-        st.session_state.transactions = pd.DataFrame(
-            columns=["sales", "expenses"]
-        )
+        if df.empty:
+            st.info("Your dashboard is empty. Please add data or upload a file.")
+        else:
+            # Data Preparation
+            df["Date"] = pd.to_datetime(df["Date"])
+            df["Profit"] = df["Sales"] - df["Expenses"]
+            df['Month_Year'] = df['Date'].dt.strftime('%B %Y')
 
-    # ---------- SIDEBAR ----------
-    st.sidebar.markdown("## 👤 Logged in as")
-    st.sidebar.success(username)
+            # --- 1. MONTHLY FILTER ---
+            available_months = df['Month_Year'].unique()
+            selected_month = st.selectbox("📅 Select Month to Analyze", available_months)
 
-    nav = st.sidebar.radio(
-        "📌 Navigation",
-        ["🏠 Dashboard", "➕ Add Transaction", "👤 Profile & Settings", "🚪 Logout"]
-    )
+            # Filtered Data for the selected month
+            m_df = df[df['Month_Year'] == selected_month].sort_values("Date")
 
-    # ==========================================================
-    # 🏠 DASHBOARD
-    # ==========================================================
-    if nav == "🏠 Dashboard":
+            # --- 2. KPI METRICS (Monthly) ---
+            ts, te, tp = m_df["Sales"].sum(), m_df["Expenses"].sum(), m_df["Profit"].sum()
 
-        st.title("📊 Business Analytics Dashboard")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown(
+                    f'<div class="kpi-card"><div class="kpi-title">Monthly Sales</div><div class="kpi-value">{format_k(ts)}</div></div>',
+                    unsafe_allow_html=True)
+            with c2:
+                st.markdown(
+                    f'<div class="kpi-card" style="border-top-color:#ff4b4b"><div class="kpi-title">Monthly Expenses</div><div class="kpi-value">{format_k(te)}</div></div>',
+                    unsafe_allow_html=True)
+            with c3:
+                profit_color = "#00c853" if tp >= 0 else "#ff4b4b"
+                st.markdown(
+                    f'<div class="kpi-card" style="border-top-color:{profit_color}"><div class="kpi-title">Monthly Profit</div><div class="kpi-value">{format_k(tp)}</div></div>',
+                    unsafe_allow_html=True)
 
-        df = st.session_state.transactions
+            # --- 3. DAILY PROFIT/LOSS GRAPH ---
+            st.subheader(f"📈 Daily Profit Trend - {selected_month}")
+            daily_data = m_df.groupby("Date")["Profit"].sum().reset_index()
 
-        if not df.empty:
+            fig_daily = px.area(daily_data, x="Date", y="Profit",
+                                title="Daily Profitability Path",
+                                line_shape="spline",
+                                color_discrete_sequence=["#6c63ff"])
+            fig_daily.add_hline(y=0, line_dash="dash", line_color="red", annotation_text="Break-even point")
+            st.plotly_chart(fig_daily, use_container_width=True)
 
-            total_sales = df["sales"].sum()
-            total_expenses = df["expenses"].sum()
-            profit = total_sales - total_expenses
-            margin = (profit / total_sales) * 100 if total_sales > 0 else 0
+            # --- 4. PRODUCT PROFITABILITY & RATIOS ---
+            col1, col2 = st.columns(2)
 
-            # KPI
-            c1, c2, c3, c4 = st.columns(4)
+            with col1:
+                st.subheader("📦 Most Profitable Products")
+                product_profit = m_df.groupby("Product")["Profit"].sum().sort_values(ascending=False).reset_index()
+                fig_prod = px.bar(product_profit, x="Profit", y="Product",
+                                  orientation='h', color="Profit",
+                                  color_continuous_scale="RdYlGn",
+                                  title="Profit by Product")
+                st.plotly_chart(fig_prod, use_container_width=True)
 
-            c1.metric("💰 Sales", f"{total_sales:.2f}")
-            c2.metric("💸 Expenses", f"{total_expenses:.2f}")
-            c3.metric("📈 Profit", f"{profit:.2f}")
-            c4.metric("📊 Margin %", f"{margin:.2f}%")
+            with col2:
+                st.subheader("⚖️ Expense vs Revenue Ratio")
+                fig_pie = go.Figure(data=[go.Pie(labels=['Revenue', 'Expenses'],
+                                                 values=[ts, te],
+                                                 hole=.5,
+                                                 marker_colors=['#00c853', '#ff4b4b'])])
+                st.plotly_chart(fig_pie, use_container_width=True)
 
-            # STATUS
-            if profit > 0:
-                st.success("🟢 Business Running in PROFIT")
-            elif profit < 0:
-                st.error("🔴 Business Running in LOSS")
-            else:
-                st.warning("🟡 Break Even")
+            st.markdown("### 📝 Monthly Transaction Details")
+            st.dataframe(m_df[["Date", "Product", "Sales", "Expenses", "Profit", "Quantity"]].sort_values("Date",
+                                                                                                          ascending=False),
+                         use_container_width=True)
 
-            # VISUALIZATION DATA
-            chart_df = pd.DataFrame({
-                "Category": ["Sales", "Expenses", "Profit"],
-                "Amount": [total_sales, total_expenses, profit]
-            })
+    # --- REST OF THE FUNCTIONS (KEEP YOUR ORIGINAL CODE FOR THESE) ---
+    elif menu == "Add Transaction":
+        st.title("➕ Manual Data Entry")
+        with st.form("input_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            d = col1.date_input("Transaction Date")
+            p = col2.text_input("Product/Service Name")
+            s = col1.number_input("Sales Revenue (₹)", min_value=0.0)
+            e = col2.number_input("Cost/Expense (₹)", min_value=0.0)
+            q = st.number_input("Quantity Sold", min_value=1)
 
-            st.subheader("📊 Financial Overview")
-            st.bar_chart(chart_df.set_index("Category"))
+            if st.form_submit_button("Submit Transaction"):
+                new_entry = pd.DataFrame([{"Date": d, "Product": p, "Sales": s, "Expenses": e, "Quantity": q}])
+                st.session_state.data = pd.concat([st.session_state.data, new_entry], ignore_index=True)
+                st.success("Data successfully saved!")
 
-            st.subheader("📈 Transaction Trend")
-            st.line_chart(df)
+    elif menu == "Upload File":
+        st.title("📂 CSV Data Import")
+        file = st.file_uploader("Choose File", type="csv")
+        if file:
+            up_df = pd.read_csv(file)
+            st.session_state.data = pd.concat([st.session_state.data, up_df], ignore_index=True)
+            st.success(f"Successfully imported {len(up_df)} rows!")
 
-            # HISTORY TABLE
-            st.subheader("📜 Transaction History")
-            st.dataframe(df, use_container_width=True)
+        # ================= AI PREDICTION LOGIC =================
+
+    elif menu == "AI Prediction":
+
+        st.title("🔮 AI Profit Predictor & Product Forecast")
+
+        if len(df) >= 5:  # AI works better with more data
+
+            st.markdown("### 🔍 Product-Wise Future Profit Potential")
+
+            # 1. AI Logic for Product Analysis
+
+            unique_products = df["Product"].unique()
+
+            predictions = []
+
+            for prod in unique_products:
+
+                prod_df = df[df["Product"] == prod]
+
+                if len(prod_df) >= 2:  # At least 2 records per product to predict
+
+                    X_prod = prod_df[["Sales", "Expenses", "Quantity"]]
+
+                    y_prod = prod_df["Sales"] - prod_df["Expenses"]
+
+                    model = LinearRegression().fit(X_prod, y_prod)
+
+                    # Predict based on that product's average performance
+
+                    avg_s = prod_df["Sales"].mean()
+
+                    avg_e = prod_df["Expenses"].mean()
+
+                    avg_q = prod_df["Quantity"].mean()
+
+                    pred_val = model.predict([[avg_s, avg_e, avg_q]])[0]
+
+                    predictions.append({"Product": prod, "Predicted_Profit": pred_val})
+
+            if predictions:
+                pred_df = pd.DataFrame(predictions).sort_values(by="Predicted_Profit", ascending=False)
+
+                # 2. Show Best Product Recommendation
+
+                best_prod = pred_df.iloc[0]["Product"]
+
+                best_val = pred_df.iloc[0]["Predicted_Profit"]
+
+                st.success(
+                    f"🌟 **AI Recommendation:** Future mein **{best_prod}** aapko sabse zyada profit (Approx {format_k(best_val)}) de sakta hai.")
+
+                # 3. AI Prediction Graph
+
+                st.markdown("### 📊 Predicted Profit Potential by Product")
+
+                fig_ai_prod = px.bar(pred_df, x="Product", y="Predicted_Profit",
+
+                                     color="Predicted_Profit",
+
+                                     color_continuous_scale="Viridis",
+
+                                     text_auto='.2s',
+
+                                     title="AI Forecast: Which Product will earn more?")
+
+                fig_ai_prod.update_layout(template="plotly_white")
+
+                st.plotly_chart(fig_ai_prod, use_container_width=True)
+
+            st.divider()
+
+            # --- Individual Prediction Tool ---
+
+            st.markdown("### 🧮 Manual Scenario Testing")
+
+            col_in1, col_in2, col_in3 = st.columns(3)
+
+            ps = col_in1.number_input("Sales Prediction (₹)", min_value=0.0, value=float(df["Sales"].mean()))
+
+            pe = col_in2.number_input("Expenses Prediction (₹)", min_value=0.0, value=float(df["Expenses"].mean()))
+
+            pq = col_in3.number_input("Quantity Prediction", min_value=1, value=int(df["Quantity"].mean()))
+
+            if st.button("Run AI Scenario"):
+                X = df[["Sales", "Expenses", "Quantity"]]
+
+                y = df["Sales"] - df["Expenses"]
+
+                reg = LinearRegression().fit(X, y)
+
+                res = reg.predict([[ps, pe, pq]])[0]
+
+                st.metric("Expected Profit for this Scenario", f"₹{res:,.2f}")
+
+                st.balloons()
 
         else:
-            st.info("No transactions yet — Add transactions to see analytics")
 
-    # ==========================================================
-    # ➕ ADD TRANSACTION
-    # ==========================================================
-    elif nav == "➕ Add Transaction":
+            st.warning("⚠️ AI ko analyze karne ke liye kam se kam 5 transactions ki zaroorat hai.")
+    elif menu == "Profile":
+        st.title("👤 My Account")
+        st.info(f"Currently logged in as: {st.session_state.username}")
 
-        st.header("➕ Add Business Transactions")
 
-        # -------- Manual Entry --------
-        st.subheader("✍️ Manual Entry")
+        db = get_connection()
+        cursor = db.cursor()
 
-        sales = st.number_input("Enter Sales", min_value=0.0)
-        expenses = st.number_input("Enter Expenses", min_value=0.0)
-
-        if st.button("Add Transaction"):
-
-            new_row = pd.DataFrame([{
-                "sales": sales,
-                "expenses": expenses
-            }])
-
-            st.session_state.transactions = pd.concat(
-                [st.session_state.transactions, new_row],
-                ignore_index=True
-            )
-
-            st.success("✅ Transaction Added")
-
-        # -------- File Upload --------
-        st.subheader("📂 Upload Transaction File")
-
-        file = st.file_uploader(
-            "Upload CSV or Excel",
-            type=["csv", "xlsx"]
-        )
-
-        if file:
-
-            df = pd.read_csv(file) if file.name.endswith(".csv") else pd.read_excel(file)
-
-            df.columns = df.columns.str.strip().str.lower()
-
-            if "sales" not in df.columns or "expenses" not in df.columns:
-                st.error("File must contain sales and expenses columns")
-            else:
-                st.session_state.transactions = pd.concat(
-                    [st.session_state.transactions, df[["sales", "expenses"]]],
-                    ignore_index=True
-                )
-
-                st.success("✅ Transactions Imported Successfully")
-
-    # ==========================================================
-    # 👤 PROFILE
-    # ==========================================================
-    elif nav == "👤 Profile & Settings":
-
-        st.header("👤 Profile Settings")
-
-        cursor.execute(
-            "SELECT username,email FROM users WHERE username=%s",
-            (username,)
-        )
+        # Fetch current user details
+        cursor.execute("SELECT username, email FROM users WHERE username=%s", (st.session_state.username,))
         user_data = cursor.fetchone()
 
         if user_data:
+            current_username, current_email = user_data
 
-            new_username = st.text_input("Username", value=user_data[0])
-            new_email = st.text_input("Email", value=user_data[1])
-            new_password = st.text_input("New Password", type="password")
+            # Editable form
+            with st.form("edit_profile_form"):
+                new_username = st.text_input("Username", value=current_username)
+                new_email = st.text_input("Email", value=current_email)
+                new_password = st.text_input("New Password", type="password",
+                                             placeholder="Leave blank to keep current password")
 
-            if st.button("Update Profile"):
+                if st.form_submit_button("Save Changes"):
+                    try:
+                        # Update username and email
+                        cursor.execute(
+                            "UPDATE users SET username=%s, email=%s WHERE username=%s",
+                            (new_username, new_email, current_username)
+                        )
 
-                cursor.execute(
-                    "UPDATE users SET username=%s,email=%s WHERE username=%s",
-                    (new_username, new_email, username)
-                )
-                db.commit()
+                        # Update password if provided
+                        if new_password:
+                            hashed_pw = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt())
+                            cursor.execute(
+                                "UPDATE users SET password=%s WHERE username=%s",
+                                (hashed_pw, new_username)
+                            )
 
-                if new_password:
-                    hashed_pw = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt())
-                    cursor.execute(
-                        "UPDATE users SET password=%s WHERE username=%s",
-                        (hashed_pw, new_username)
-                    )
-                    db.commit()
+                        db.commit()
 
-                st.session_state.token = create_token(new_username)
-                st.success("✅ Profile Updated")
+                        # Update session state
+                        st.session_state.username = new_username
+                        st.success("Profile updated successfully!")
 
-    # ==========================================================
-    # 🚪 LOGOUT
-    # ==========================================================
-    else:
+                    except Exception as e:
+                        st.error("Error updating profile. Please try again.")
+        else:
+            st.error("Unable to fetch user details.")
+    elif menu == "Logout":
         st.session_state.logged_in = False
-        st.session_state.token = None
-        st.session_state.transactions = pd.DataFrame(columns=["sales", "expenses"])
+        st.session_state.username = ""
         st.rerun()
+
+
+if __name__ == "__main__":
+    dashboard_page()
