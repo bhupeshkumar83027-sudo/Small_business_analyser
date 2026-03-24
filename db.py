@@ -2,6 +2,8 @@ import mysql.connector
 import os
 
 def get_connection():
+    print("DB_HOST:", os.getenv("DB_HOST"))  # DEBUG LINE
+
     return mysql.connector.connect(
         host=os.getenv("DB_HOST"),
         user=os.getenv("DB_USER"),
